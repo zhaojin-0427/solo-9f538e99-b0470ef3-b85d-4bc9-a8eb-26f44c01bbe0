@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS calibration_points (
 );
 
 CREATE TABLE IF NOT EXISTS observations (
-    obs_id         TEXT PRIMARY KEY, -- 观测 ID
+    obs_id         TEXT PRIMARY KEY, -- 全局号观测 ID
     boot_segment   TEXT NOT NULL,    -- 原文：开机段
     counter        INTEGER NOT NULL, -- 原文：段内计数
     tide_level     REAL NOT NULL,    -- 原文：潮位
@@ -39,8 +39,27 @@ CREATE TABLE IF NOT EXISTS observations (
     cal_hi_utc_ms  INTEGER
 );
 
+-- 段内号观测：主键 (开机段, 段内号)。记录器重启后新段同号另存一条，
+-- 与 observations 的全局号互不干扰。旧卷打开时本表自动补建。
+CREATE TABLE IF NOT EXISTS segment_observations (
+    boot_segment   TEXT NOT NULL,    -- 原文：开机段（主键之一）
+    local_obs_id   TEXT NOT NULL,    -- 原文：段内号（主键之一）
+    counter        INTEGER NOT NULL, -- 原文：段内计数
+    tide_level     REAL NOT NULL,    -- 原文：潮位
+    utc_ms         INTEGER,          -- 换算结果；NULL 表示待校时
+    status         TEXT NOT NULL,    -- ok / pending_calibration / conflict
+    reason         TEXT,             -- 状态原因
+    cal_lo_counter INTEGER,          -- 校时依据：下界校时点
+    cal_lo_utc_ms  INTEGER,
+    cal_hi_counter INTEGER,          -- 校时依据：上界校时点
+    cal_hi_utc_ms  INTEGER,
+    PRIMARY KEY (boot_segment, local_obs_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_observations_utc_ms ON observations(utc_ms);
 CREATE INDEX IF NOT EXISTS idx_observations_segment ON observations(boot_segment);
+CREATE INDEX IF NOT EXISTS idx_segment_observations_utc_ms
+    ON segment_observations(utc_ms);
 """
 
 

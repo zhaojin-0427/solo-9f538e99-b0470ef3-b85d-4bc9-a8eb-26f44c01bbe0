@@ -21,14 +21,20 @@ pytest                 # 运行测试
 
 数据默认存放在命名卷 `buoy-data` 的 `/data/buoy.db`（可用环境变量
 `BUOY_DB` 覆盖）。SQLite 为单写者模型，容器以单进程运行。
+旧版数据卷可直接挂入：启动时自动补建段内号观测表，既有全局号数据原样可查。
 
 ## 概念与规则
 
 - **开机段（boot_segment）**：一次开机周期。计数只在段内单调，重启归零。
 - **校时点（calibration point）**：`(开机段, 计数) -> UTC 毫秒`。
   同段同计数重复提交时新值替换旧值。
-- **观测（observation）**：`(观测 ID, 开机段, 计数, 潮位)`。
-  同一观测 ID 重复提交会覆盖原文并重算。
+- **观测（observation）**：`(编号, 开机段, 计数, 潮位)`。编号有两种，
+  同一批提交可混用，每条只填一个：
+  - **全局号 `obs_id`**：全库唯一。同号重复提交覆盖原文并重算，
+    可跨开机段更正（记录器换了段也用同号更正旧数据）。
+  - **段内号 `local_obs_id`**：仅在开机段内唯一。只覆盖本段的同号观测；
+    记录器重启后新段的同号读数**另存一条**（如重启前后的两条 42 号并存），
+    也可与同名全局号并存、互不干扰。
 
 ### 校时换算
 
@@ -47,10 +53,10 @@ pytest                 # 运行测试
 
 - **补传/更正校时点**会重算受影响观测（区间扩大可让待校时观测转为可用）。
 - **冲突**：同一 UTC 毫秒被 ≥2 个不同开机段的观测占用时，这些观测全部
-  置为 `conflict` 不供分析；更正校时点或覆盖观测解除冲突后自动恢复。
-  同一开机段内多条观测共用同一毫秒不算冲突。
+  置为 `conflict` 不供分析；**两类编号一同判定**。更正校时点或覆盖观测
+  解除冲突后自动恢复供数。同一开机段内多条观测共用同一毫秒不算冲突。
 - **整批拒绝**：校时点合并后若使任一段内 UTC 随计数倒退，整个校时批次
-  以 `409` 拒绝并回滚，旧数据照常供数。
+  以 `409` 拒绝并回滚，原文、校时点与供数保持不变。
 
 ### 原子性
 
@@ -64,10 +70,13 @@ pytest                 # 运行测试
 
 ### `POST /observations` — 分批提交观测
 
+每条只填全局号 `obs_id` 或段内号 `local_obs_id` 之一，同一批可混用：
+
 ```json
 {
   "observations": [
-    {"obs_id": "obs-1", "boot_segment": "boot-1", "counter": 1500, "tide_level": 2.34}
+    {"obs_id": "obs-1", "boot_segment": "boot-1", "counter": 1500, "tide_level": 2.34},
+    {"local_obs_id": "42", "boot_segment": "boot-2", "counter": 60, "tide_level": 2.41}
   ]
 }
 ```
@@ -83,21 +92,30 @@ pytest                 # 运行测试
 }
 ```
 
-两个提交接口的响应都会列出**本次提交中时刻或状态发生变化的观测 ID**
-（含新观测，以及被卷入/解除冲突的其他观测）：
+两个提交接口的响应都会列出**本次提交中时刻或状态发生变化的观测**：
+`changed` 为全局号回执（含新观测，以及被卷入/解除冲突的其他观测），
+`segment_changed` 另列新增、时刻或状态变化的段内号观测
+（带开机段、段内号、UTC 毫秒和状态）：
 
 ```json
 {
   "changed_count": 1,
-  "changed": [{"obs_id": "obs-1", "utc_ms": 1700000000500, "status": "ok"}]
+  "changed": [{"obs_id": "obs-1", "utc_ms": 1700000000500, "status": "ok"}],
+  "segment_changed_count": 1,
+  "segment_changed": [
+    {"boot_segment": "boot-2", "local_obs_id": "42",
+     "utc_ms": 1700000000060, "status": "ok"}
+  ]
 }
 ```
 
 ### `GET /tide-levels?start_ms=...&end_ms=...` — 按 UTC 范围查可用潮位
 
 只返回 `status=ok` 的观测，区间含端点，按 UTC 毫秒升序。
+默认仅返回全局号观测；加 `include_segment_ids=true` 时一并返回可用的
+段内号观测（条目带 `boot_segment` 与 `local_obs_id`）。
 
-### `GET /observations/{obs_id}` — 按观测 ID 查状态和原因
+### `GET /observations/{obs_id}` — 按全局号查状态和原因
 
 返回原文、换算结果、状态、原因与校时依据（用于换算的上下界校时点）：
 
@@ -112,6 +130,11 @@ pytest                 # 运行测试
   }
 }
 ```
+
+### `GET /segments/{boot_segment}/observations/{local_obs_id}` — 按开机段和段内号查
+
+返回段内号观测的原文与校时状态，字段与全局号详情一致
+（`local_obs_id` 取代 `obs_id`）。
 
 ### 其他
 
